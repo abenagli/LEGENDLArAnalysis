@@ -6,7 +6,7 @@
 #include "/home/carla/Documents/ADC_Henrique/cold_box_analysis/class/MYCODES.h"
 
 
-void adc_read_all_data(string datadir = "./", float intTime = 1000){
+void adc_read_all_data(string datadir = "./", float intTime = 1000, float startCharge = 4000){
     
     system("rm files.log");
     int datadirlength = datadir.length();
@@ -25,7 +25,7 @@ void adc_read_all_data(string datadir = "./", float intTime = 1000){
     r.isBinary = true;
     
     r.baselineTime = 4000; // time limit for baseline in ns
-    r.startCharge = 4000;  // start integration time in ns
+    r.startCharge = startCharge;  // start integration time in ns
     r.chargeTime = r.startCharge + intTime; // last time to integrate ns
     r.maxRange = 1000; // max range to search for amplitude peak
     r.fast = 600; // fprompt fast integration time

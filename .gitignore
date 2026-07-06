@@ -10,6 +10,10 @@ files.log
 tmp_job_*/
 test_*/
 
+# Alternative config files (keep config.py, ignore others)
+config.toml
+config.json
+
 # Virtual environments
 venv/
 env/
