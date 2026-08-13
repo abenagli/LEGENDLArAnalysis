@@ -18,22 +18,29 @@ MACRO_FILE = "adc_read_all_data.C"
 CONFIG = {
     "datasets": [
         {
-            "name": "20260415_PDU_ModuLYNO_ptp_blu_44_7V",
+            "name": "20260616_PDU_MLYNO_verdenew_TPB_ThinPen",
             "runs": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
             "charge_times": [6000],  # Integration times (ns)
-            "startCharge": 4000,      # Start of charge window (ns)
+            "startCharge": 3800,     # Start of charge window (ns)
         },
         {
-            "name": "20260415_PDU_ModuLYNO_ptp_blu_45_83V",
+            "name": "20260616_PDU_MLYNO_verdenew_TPB_ThinPen",
             "runs": [12, 13, 14],
             "charge_times": [400, 500, 750, 1000, 1500, 2000, 3000],
             "startCharge": 4000,
         },
-        # {
-        #     "name": "20260415_PDU_ModuLYNO_ptp_blu_47_2V",
-        #     "runs": [1, 2, 3],
-        #     "charge_times": [400, 500, 750, 1000, 1500, 2000, 3000],
-        #     "startCharge": 4000,
-        # },
+
+        {
+            "name": "20260617_PDU_MLYNO_verdenew_TPB_ThinPen",
+            "runs": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+            "charge_times": [6000],  # Integration times (ns)
+            "startCharge": 3800,     # Start of charge window (ns)
+        },
+        {
+            "name": "20260617_PDU_MLYNO_verdenew_TPB_ThinPen",
+            "runs": [12, 13, 14],
+            "charge_times": [400, 500, 750, 1000, 1500, 2000, 3000],
+            "startCharge": 4000,
+        },
     ]
 }

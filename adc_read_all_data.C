@@ -44,11 +44,12 @@ void adc_read_all_data(string datadir = "./", float intTime = 1000, float startC
 
     // r.channels = {1};
     // r.channels = {1,2,3,4};
-      
-
     
-    r.adc_read_all_data();
-
     
+    // filter number of waveforms to save. 1 = save all, 100 = save every 100th waveform, -1 = save none
+    r.waveformSaveInterval = 500; // salva eventi 0, 100, 200, ...
+    r.maxSavedWaveforms = -1;     // massimo 50 waveform; -1 = nessun limite
+    
+    
+    r.adc_read_all_data();    
 }
-
