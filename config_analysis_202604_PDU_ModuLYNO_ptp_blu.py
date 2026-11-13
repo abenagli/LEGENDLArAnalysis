@@ -2,7 +2,7 @@
 
 V_BREAKDOWN = 41.83
 SERIES_VOLTAGE_DROP = 1.0
-PLOT_FOLDER = "/var/www/html/LEGEND/202604_temp"
+PLOT_FOLDER = "/var/www/html/LEGEND/202604_PDU_ModuLYNO_ptp_blu"
 
 GAIN_VS_WINDOW_CONFIG = {
     "plot_folder": PLOT_FOLDER,
@@ -176,7 +176,7 @@ GAIN_ANALYSIS_CONFIG = {
 ALPHA_ANALYSIS_CONFIG = {
     # Set to the output of study_gain.py to express results in photoelectrons.
     # Both gain_vs_Vov_Ch0 and gain_vs_Vov_Ch1 must be present.
-    "gain_file": "/var/www/html/LEGEND/202604_temp/gain_vs_Vov.root",
+    "gain_file": "/var/www/html/LEGEND/202604_PDU_ModuLYNO_ptp_blu/gain_vs_Vov.root",
     "allow_gain_extrapolation": True,
     "charge_1pe_default": 1.0,
     "fprompt_cut": 0.48,
@@ -201,6 +201,11 @@ ALPHA_ANALYSIS_CONFIG = {
             "label": "20260416_47_2V",
             "v_bias": 47.2,
             "base_folder": "/home/carla/Documents/ADC_data/Legend/20260416_PDU_ModuLYNO_ptp_blu_47_2V",
+        },
+        {
+            "label": "20260417_44_7V",
+            "v_bias": 44.7,
+            "base_folder": "/home/carla/Documents/ADC_data/Legend/20260417_PDU_ModuLYNO_ptp_blu_44_7V",
         },
     ],
 

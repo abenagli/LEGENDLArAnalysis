@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import csv
 import importlib.util
 import math
 import warnings
@@ -14,7 +15,9 @@ import tdrstyle
 SCRIPT_DIR = Path(__file__).parent.resolve()
 DEFAULT_CONFIG = SCRIPT_DIR / "config_analysis_202604_PDU_ModuLYNO_ptp_blu.py"
 
-# Fixed geometry: run name -> source position in mm.
+# Default geometry: run name -> source position in cm, measured from the
+# bottom end. A config can override it with "run_positions" (globally or per
+# dataset).
 RUN_POSITIONS = {
     "run1": 4.0,
     "run2": 8.0,
@@ -38,6 +41,11 @@ CRYSTALBALL_MAX_FACTOR = 1.25
 CRYSTALBALL_ALPHA = 1.0
 CRYSTALBALL_N = 0.5
 ALPHA_INPUT_FILENAMES = ("analyzed_6000ns.root", "analyzed.root")
+DEFAULT_GAIN_GRAPHS = {"ch0": "gain_vs_Vov_Ch0", "ch1": "gain_vs_Vov_Ch1"}
+
+# ln(S_bottom/S_top) fit: the first and last positions are excluded because
+# they are affected by saturation from (quasi-)direct light.
+RATIO_FIT_EXCLUDED_POINTS = 1
 
 
 tdrstyle.setTDRStyle()
@@ -87,8 +95,8 @@ def prepare_plot_folder(folder):
     return plot_folder
 
 
-def find_alpha_input(run_folder):
-    for filename in ALPHA_INPUT_FILENAMES:
+def find_alpha_input(run_folder, filenames):
+    for filename in filenames:
         input_path = run_folder / filename
         if input_path.is_file():
             return input_path
@@ -124,10 +132,15 @@ def load_channel_gains(dataset, config, v_ov):
         )
         return gains, False
 
+    # Old gain files store a single graph (e.g. gain_vs_Vov_20260211) shared
+    # by both channels; "gain_graphs" maps each channel to its graph name.
+    gain_graphs = dataset.get(
+        "gain_graphs", config.get("gain_graphs", DEFAULT_GAIN_GRAPHS)
+    )
     values = {}
     try:
-        for channel_key, channel_name in (("ch0", "Ch0"), ("ch1", "Ch1")):
-            graph_name = f"gain_vs_Vov_{channel_name}"
+        for channel_key in ("ch0", "ch1"):
+            graph_name = gain_graphs[channel_key]
             graph = gain_file.Get(graph_name)
             if not graph:
                 warnings.warn(f"{graph_name} not found in {gain_path}", stacklevel=2)
@@ -233,6 +246,10 @@ def analyze_dataset(dataset, config, common_config, plot_folder):
     plot_ranges = config["plot_ranges"]
     channel_labels = config["channel_labels"]
     fprompt_cut = config["fprompt_cut"]
+    run_positions = dataset.get(
+        "run_positions", config.get("run_positions", RUN_POSITIONS)
+    )
+    input_filenames = tuple(config.get("input_filenames", ALPHA_INPUT_FILENAMES))
 
     histograms = {}
     fits = {}
@@ -247,15 +264,15 @@ def analyze_dataset(dataset, config, common_config, plot_folder):
         raise OSError(f"Cannot create ROOT file: {output_path}")
 
     try:
-        for run in RUN_POSITIONS:
+        for run in run_positions:
             run_folder = base_folder / run
             if not run_folder.is_dir():
                 continue
             existing_runs.add(run)
 
-            input_path = find_alpha_input(run_folder)
+            input_path = find_alpha_input(run_folder, input_filenames)
             if input_path is None:
-                expected = ", ".join(ALPHA_INPUT_FILENAMES)
+                expected = ", ".join(input_filenames)
                 warnings.warn(
                     f"Input file not found in {run_folder} "
                     f"(expected one of: {expected}); skipping",
@@ -367,14 +384,15 @@ def analyze_dataset(dataset, config, common_config, plot_folder):
             y_axis_max,
         )
         ROOT.gPad.SetGridy()
-        frame.SetTitle(f";Position [mm];{y_axis_label}")
+        frame.SetTitle(f";Position [cm];{y_axis_label}")
 
         graphs = {
             "ch0": ROOT.TGraphErrors(),
             "ch1": ROOT.TGraphErrors(),
             "sum": ROOT.TGraphErrors(),
         }
-        for run, position in RUN_POSITIONS.items():
+        rows = []
+        for run, position in sorted(run_positions.items(), key=lambda item: item[1]):
             if run not in existing_runs:
                 continue
             if any((run, channel) not in peaks for channel in graphs):
@@ -405,6 +423,7 @@ def analyze_dataset(dataset, config, common_config, plot_folder):
                 index = graph.GetN()
                 graph.SetPoint(index, position, value)
                 graph.SetPointError(index, 0.0, error)
+            rows.append({"run": run, "position": position, **values})
 
         if not any(graph.GetN() for graph in graphs.values()):
             warnings.warn(
@@ -412,7 +431,7 @@ def analyze_dataset(dataset, config, common_config, plot_folder):
                 "position plot will not be written",
                 stacklevel=2,
             )
-            return
+            return None
 
         styles = {
             "ch0": (ROOT.kRed, 20),
@@ -445,10 +464,225 @@ def analyze_dataset(dataset, config, common_config, plot_folder):
         outfile.cd()
         for channel, graph in graphs.items():
             graph.Write(f"g_{channel}")
+
+        unit = "pe" if use_gain else "ADC"
+        write_position_table(
+            plot_folder / f"{label}_alpha_peak_vs_position.csv", rows, unit
+        )
+        ratio_fit = draw_ratio_vs_position(
+            label, rows, v_ov, plot_ranges, plot_folder, outfile
+        )
+        if ratio_fit is None:
+            return None
+        return {
+            "label": label,
+            "v_bias": dataset["v_bias"],
+            "v_ov": v_ov,
+            "unit": unit,
+            **ratio_fit,
+        }
     finally:
         outfile.Close()
         for input_file in input_files:
             input_file.Close()
+
+
+def write_position_table(path, rows, unit):
+    """Write S_top, S_bottom, S_sum and ln(S_bottom/S_top) versus position."""
+    with open(path, "w", newline="") as table:
+        writer = csv.writer(table)
+        writer.writerow([
+            "run", "position_cm",
+            f"top_{unit}", f"top_err_{unit}",
+            f"bottom_{unit}", f"bottom_err_{unit}",
+            f"sum_{unit}", f"sum_err_{unit}",
+            "ln_bottom_over_top", "ln_bottom_over_top_err",
+        ])
+        for row in rows:
+            ln_ratio, ln_ratio_error = ln_bottom_over_top(row)
+            writer.writerow([
+                row["run"], f"{row['position']:g}",
+                f"{row['ch0'][0]:.6g}", f"{row['ch0'][1]:.6g}",
+                f"{row['ch1'][0]:.6g}", f"{row['ch1'][1]:.6g}",
+                f"{row['sum'][0]:.6g}", f"{row['sum'][1]:.6g}",
+                f"{ln_ratio:.6g}", f"{ln_ratio_error:.6g}",
+            ])
+    print(f"Written {path}")
+
+
+def ln_bottom_over_top(row):
+    top, top_error = row["ch0"]
+    bottom, bottom_error = row["ch1"]
+    if top <= 0 or bottom <= 0:
+        return math.nan, math.nan
+    return (
+        math.log(bottom / top),
+        math.hypot(bottom_error / bottom, top_error / top),
+    )
+
+
+def draw_ratio_vs_position(label, rows, v_ov, plot_ranges, plot_folder, outfile):
+    """Plot ln(S_bottom/S_top) versus position and fit it with a straight line.
+
+    With S_B ~ c_B exp(-x/lambda_eff) and S_T ~ c_T exp(-(L-x)/lambda_eff),
+    ln(S_B/S_T) = ln(c_B/c_T) + L/lambda_eff - (2/lambda_eff) x, hence
+    lambda_eff = -2/slope. The first and last points are excluded from the fit.
+    """
+    points = []
+    for row in rows:
+        ln_ratio, ln_ratio_error = ln_bottom_over_top(row)
+        if math.isfinite(ln_ratio):
+            points.append((row["position"], ln_ratio, ln_ratio_error))
+
+    n_excluded = RATIO_FIT_EXCLUDED_POINTS
+    fit_points = points[n_excluded:len(points) - n_excluded]
+    excluded_points = points[:n_excluded] + points[len(points) - n_excluded:]
+    if len(fit_points) < 2:
+        warnings.warn(
+            f"[{label}] Only {len(fit_points)} point(s) left after excluding "
+            "the first and last positions; ratio plot will not be written",
+            stacklevel=2,
+        )
+        return None
+    if len(fit_points) == 2:
+        warnings.warn(
+            f"[{label}] Ratio fit with only 2 points (ndf = 0)", stacklevel=2
+        )
+
+    graph_fit = ROOT.TGraphErrors()
+    for position, value, error in fit_points:
+        index = graph_fit.GetN()
+        graph_fit.SetPoint(index, position, value)
+        graph_fit.SetPointError(index, 0.0, error)
+    graph_excluded = ROOT.TGraphErrors()
+    for position, value, error in excluded_points:
+        index = graph_excluded.GetN()
+        graph_excluded.SetPoint(index, position, value)
+        graph_excluded.SetPointError(index, 0.0, error)
+
+    fit_min = fit_points[0][0]
+    fit_max = fit_points[-1][0]
+    line = ROOT.TF1(f"fit_ratio_{label}", "pol1", fit_min, fit_max)
+    graph_fit.Fit(line, "SRQ", "", fit_min, fit_max)
+    # The peak-position errors are purely statistical and chi2/ndf >> 1: scale
+    # the parameter errors so that the reduced chi2 is ~1 (never scale down).
+    chi2 = line.GetChisquare()
+    ndf = line.GetNDF()
+    error_scale = math.sqrt(chi2 / ndf) if ndf > 0 and chi2 > ndf else 1.0
+    intercept = line.GetParameter(0)
+    intercept_error = line.GetParError(0) * error_scale
+    slope = line.GetParameter(1)
+    slope_error = line.GetParError(1) * error_scale
+    lambda_eff = -2.0 / slope if slope != 0 else math.inf
+    lambda_eff_error = 2.0 * slope_error / slope**2 if slope != 0 else math.inf
+    print(
+        f"[{label}] ln(S_B/S_T) fit: intercept = {intercept:.4f} +- "
+        f"{intercept_error:.4f}, slope = {slope:.5f} +- {slope_error:.5f} cm^-1, "
+        f"lambda_eff = {lambda_eff:.1f} +- {lambda_eff_error:.1f} cm "
+        f"(errors scaled by {error_scale:.2f})"
+    )
+
+    y_values = [value for _, value, _ in points]
+    y_errors = [error for _, _, error in points]
+    y_low = min(value - error for value, error in zip(y_values, y_errors))
+    y_high = max(value + error for value, error in zip(y_values, y_errors))
+    y_span = max(y_high - y_low, 0.1)
+
+    canvas = ROOT.TCanvas(f"c_ratio_{label}", "", 800, 600)
+    frame = ROOT.gPad.DrawFrame(
+        plot_ranges["position_min"],
+        y_low - 0.15 * y_span,
+        plot_ranges["position_max"],
+        y_high + 0.9 * y_span,
+    )
+    ROOT.gPad.SetGridy()
+    frame.SetTitle(";Position [cm];ln(S_{bottom}/S_{top})")
+
+    graph_fit.SetMarkerStyle(20)
+    graph_fit.SetMarkerColor(ROOT.kBlack)
+    graph_fit.SetLineColor(ROOT.kBlack)
+    graph_excluded.SetMarkerStyle(24)
+    graph_excluded.SetMarkerColor(ROOT.kGray + 2)
+    graph_excluded.SetLineColor(ROOT.kGray + 2)
+    line.SetLineColor(ROOT.kRed)
+    line.SetLineWidth(2)
+    graph_fit.Draw("P SAME")
+    if graph_excluded.GetN():
+        graph_excluded.Draw("P SAME")
+    line.Draw("SAME")
+
+    legend = ROOT.TLegend(0.18, 0.18, 0.48, 0.32)
+    legend.SetBorderSize(0)
+    legend.SetFillStyle(0)
+    legend.SetTextFont(42)
+    legend.SetTextSize(0.035)
+    legend.AddEntry(graph_fit, "fitted points", "pe")
+    if graph_excluded.GetN():
+        legend.AddEntry(graph_excluded, "excluded (saturation)", "pe")
+    legend.Draw()
+
+    latex = ROOT.TLatex()
+    latex.SetNDC()
+    latex.SetTextFont(42)
+    latex.SetTextSize(0.05)
+    latex.DrawLatex(0.65, 0.84, f"V_{{OV}} = {v_ov:.2f} V")
+    latex.SetTextSize(0.035)
+    text_lines = [
+        "fit: ln(S_{B}/S_{T}) = p_{0} + p_{1} x",
+        f"p_{{0}} = {intercept:.3f} #pm {intercept_error:.3f}",
+        f"p_{{1}} = ({1e3 * slope:.2f} #pm {1e3 * slope_error:.2f})"
+        "#times10^{-3} cm^{-1}",
+        f"#lambda_{{eff}} = -2/p_{{1}} = {lambda_eff:.1f} #pm "
+        f"{lambda_eff_error:.1f} cm",
+        f"#chi^{{2}}/ndf = {chi2:.1f}/{ndf}",
+    ]
+    if error_scale > 1.0:
+        text_lines.append(
+            f"errors scaled by #sqrt{{#chi^{{2}}/ndf}} = {error_scale:.2f}"
+        )
+    for index, text in enumerate(text_lines):
+        latex.DrawLatex(0.50, 0.77 - 0.05 * index, text)
+    canvas.SaveAs(str(plot_folder / f"{label}_alpha_ratio_vs_position.png"))
+
+    outfile.cd()
+    graph_fit.Write("g_ln_ratio_fit")
+    graph_excluded.Write("g_ln_ratio_excluded")
+    line.Write()
+
+    return {
+        "n_fit_points": len(fit_points),
+        "intercept": intercept,
+        "intercept_error": intercept_error,
+        "slope": slope,
+        "slope_error": slope_error,
+        "lambda_eff": lambda_eff,
+        "lambda_eff_error": lambda_eff_error,
+        "chi2": chi2,
+        "ndf": ndf,
+        "error_scale": error_scale,
+    }
+
+
+def write_lambda_summary(path, results):
+    with open(path, "w", newline="") as table:
+        writer = csv.writer(table)
+        writer.writerow([
+            "label", "v_bias_V", "v_ov_V", "unit", "n_fit_points",
+            "intercept", "intercept_err", "slope_per_cm", "slope_err_per_cm",
+            "lambda_eff_cm", "lambda_eff_err_cm", "chi2", "ndf", "error_scale",
+        ])
+        for result in results:
+            writer.writerow([
+                result["label"], f"{result['v_bias']:g}",
+                f"{result['v_ov']:.3f}", result["unit"],
+                result["n_fit_points"],
+                f"{result['intercept']:.6g}", f"{result['intercept_error']:.6g}",
+                f"{result['slope']:.6g}", f"{result['slope_error']:.6g}",
+                f"{result['lambda_eff']:.6g}", f"{result['lambda_eff_error']:.6g}",
+                f"{result['chi2']:.6g}", result["ndf"],
+                f"{result['error_scale']:.4g}",
+            ])
+    print(f"Written {path}")
 
 
 def main():
@@ -463,8 +697,13 @@ def main():
 
     config, common_config = load_config(args.config)
     plot_folder = prepare_plot_folder(common_config["plot_folder"])
+    ratio_results = []
     for dataset in config["datasets"]:
-        analyze_dataset(dataset, config, common_config, plot_folder)
+        result = analyze_dataset(dataset, config, common_config, plot_folder)
+        if result is not None:
+            ratio_results.append(result)
+    if ratio_results:
+        write_lambda_summary(plot_folder / "lambda_eff_summary.csv", ratio_results)
 
 
 if __name__ == "__main__":
